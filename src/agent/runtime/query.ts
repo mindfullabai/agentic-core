@@ -67,28 +67,61 @@ export interface AgentTurnResult {
 }
 
 /**
+ * Evento di ciclo di vita di un tool durante lo stream agentico. `start` quando
+ * l'LLM invoca il tool (porta gli args, per derivarne una label); `end` quando il
+ * risultato torna (porta l'esito ok/errore). `id` = tool_use_id dell'SDK, lega
+ * lo `start` al suo `end` per una catena di stato (es. checklist su Telegram).
+ */
+export type ToolEvent =
+  | { phase: "start"; id: string; name: string; input: unknown }
+  | { phase: "end"; id: string; name: string; ok: boolean };
+
+/**
  * Esegue un turno agentico completo. Streamma e accumula testo + tool usati.
- * `onToolUse` (opzionale) viene invocato a ogni tool-use durante lo stream —
- * per feedback live ("sta usando X") nei canali conversazionali.
+ * `onToolEvent` (opzionale) riceve start/end di ogni tool durante lo stream —
+ * per feedback live (catena di stato "sto usando X" → "✓ fatto") nei canali
+ * conversazionali. Lo `start` arriva dai blocchi tool_use dei messaggi assistant;
+ * l'`end` dai blocchi tool_result dei messaggi user successivi (stesso id).
  */
 export async function runAgent(
   prompt: string,
   input: BuildOptionsInput,
-  onToolUse?: (toolName: string) => void,
+  onToolEvent?: (event: ToolEvent) => void,
 ): Promise<AgentTurnResult> {
   const options = buildOptions(input);
   let text = "";
   const toolsCalled: string[] = [];
   let sessionId: string | undefined;
+  // Mappa tool_use_id → nome, per dare un nome anche all'evento `end` (il
+  // tool_result porta solo l'id, non il nome).
+  const pending = new Map<string, string>();
 
   for await (const msg of query({ prompt, options })) {
     if (msg.type === "assistant") {
       for (const block of msg.message.content) {
         if (block.type === "tool_use") {
           toolsCalled.push(block.name);
-          onToolUse?.(block.name);
+          pending.set(block.id, block.name);
+          onToolEvent?.({ phase: "start", id: block.id, name: block.name, input: block.input });
         } else if (block.type === "text" && block.text.trim()) {
           text += block.text;
+        }
+      }
+    } else if (msg.type === "user") {
+      // I tool_result arrivano come blocchi in un messaggio "user" sintetico.
+      const content = msg.message.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block && typeof block === "object" && (block as { type?: string }).type === "tool_result") {
+            const b = block as { tool_use_id: string; is_error?: boolean };
+            // Emetti `end` SOLO per un tool_use visto in QUESTO turno: scarta i
+            // tool_result di replay (resume sessione) che non hanno uno start qui.
+            const name = pending.get(b.tool_use_id);
+            if (name !== undefined) {
+              pending.delete(b.tool_use_id);
+              onToolEvent?.({ phase: "end", id: b.tool_use_id, name, ok: !b.is_error });
+            }
+          }
         }
       }
     } else if (msg.type === "result") {

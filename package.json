@@ -1,6 +1,6 @@
 {
   "name": "@mindfullabai/agentic-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Boilerplate generico per agenti always-on: runtime model-agnostic (Anthropic|Qwen), scheduler tick no-409, gate anti-spam, MemoryStore pluggable, Channel astratto, tool-registry tipizzato, loop conversazionale + identità, capability web-search/OCR/TTS/STT/whoop/hidrate/todoist.",
   "type": "module",
   "license": "MIT",

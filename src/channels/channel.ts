@@ -9,6 +9,23 @@
  * direttamente nel loop): qui il loop dipende dall'interfaccia, non da grammy.
  */
 
+/**
+ * Catena di stato di un turno conversazionale: un unico messaggio che cresce come
+ * checklist. `thinking()` mostra un header effimero ("⏳ Sto ragionando…");
+ * `step(id, label)` aggiunge una riga "🔧 label…" in corso; `done(id, ok)` la
+ * marca "✓ label" (o "✗ label" se ok=false). A fine turno il canale decide se
+ * lasciare la checklist nello storico (vedi reply): l'header effimero sparisce
+ * sempre, le righe done restano se ci sono stati ≥2 step.
+ */
+export interface StatusChain {
+  /** Header effimero iniziale ("sto ragionando…"). Idempotente. */
+  thinking(): Promise<void>;
+  /** Aggiunge uno step in corso. `id` lega lo start al suo done. */
+  step(id: string, label: string): Promise<void>;
+  /** Marca uno step come concluso (ok=true → ✓, ok=false → ✗). */
+  done(id: string, ok: boolean): Promise<void>;
+}
+
 export interface InboundMessage {
   /** Utente sorgente (id risolto dal canale, es. chat_id Telegram come stringa). */
   userId: string;
@@ -19,8 +36,14 @@ export interface InboundMessage {
   /**
    * Aggiorna un indicatore di stato effimero ("sto ragionando…", "uso X").
    * Fornito dai canali conversazionali; assente sui canali solo-uscita.
+   * @deprecated Preferisci `status` (catena di step). Mantenuto per retrocompat.
    */
   setStatus?: (text: string) => Promise<void>;
+  /**
+   * Catena di stato a step (checklist crescente). Fornita dai canali
+   * conversazionali che la supportano (es. Telegram); assente altrove.
+   */
+  status?: StatusChain;
   /** Invia la risposta finale in questa conversazione (chunked dal canale). */
   reply?: (text: string) => Promise<void>;
 }

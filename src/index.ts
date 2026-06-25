@@ -8,7 +8,7 @@
  * package. Vedi CLAUDE.md.
  */
 
-export const version = "0.1.0";
+export const version = "0.2.0";
 
 // ── Runtime / modello ────────────────────────────────────────────────────────
 export { loadEnv, getModelConfig, maskSecret, type ModelConfig } from "./agent/runtime/env.js";
@@ -18,6 +18,7 @@ export {
   composeOnce,
   type BuildOptionsInput,
   type AgentTurnResult,
+  type ToolEvent,
 } from "./agent/runtime/query.js";
 export {
   buildSystemPrompt,
@@ -85,7 +86,7 @@ export {
 } from "./memory/prisma/guard.js";
 
 // ── Canali ───────────────────────────────────────────────────────────────────
-export { type Channel, type InboundMessage, type InboundHandler } from "./channels/channel.js";
+export { type Channel, type InboundMessage, type InboundHandler, type StatusChain } from "./channels/channel.js";
 export { FileChannel, type FileChannelOptions } from "./channels/file.js";
 export { PushChannel, type PushChannelOptions } from "./channels/push.js";
 export {

@@ -11,9 +11,10 @@
  * utente sconosciuto viene passato a `onFirstContact`; se l'agente è single-owner
  * può catturare lì il proprio chat_id.
  */
-import type { Channel, InboundHandler, InboundMessage } from "./channel.js";
+import type { Channel, InboundHandler, InboundMessage, StatusChain } from "./channel.js";
 
 const MAX_TG_MSG = 4096;
+const THINKING_LINE = "⏳ Sto ragionando…";
 
 export interface TelegramChannelOptions {
   /** Token del bot. Se assente, risolto da TELEGRAM_BOT_TOKEN(_DEV). */
@@ -81,26 +82,79 @@ export class TelegramChannel implements Channel {
     const renderMd = this.opts.renderMarkdown;
     const dispatch = async (userId: string, text: string, ctxObj: any, meta?: Record<string, unknown>) => {
       if (!this.handler) return;
-      // Status effimero editabile + reply finale, legati a questo ctx Telegram.
-      let statusMsg: any = null;
-      let lastStatus = "";
-      const setStatus = async (s: string) => {
-        if (s === lastStatus) return;
-        lastStatus = s;
+
+      // ── Stato del turno: un solo messaggio editabile che cresce a checklist. ──
+      let statusMsg: any = null; // il messaggio Telegram (creato lazy)
+      let header = ""; // header effimero ("⏳ Sto ragionando…"), rimosso a reply
+      const steps: Array<{ id: string; label: string; state: "run" | "ok" | "err" }> = [];
+      let lastRender = ""; // ultimo testo inviato (evita edit no-op → flood control)
+
+      const renderChain = (withHeader: boolean): string => {
+        const lines = steps.map((s) => {
+          const mark = s.state === "ok" ? "✓" : s.state === "err" ? "✗" : "🔧";
+          const tail = s.state === "run" ? "…" : "";
+          return `${mark} ${s.label}${tail}`;
+        });
+        if (withHeader && header) lines.unshift(header);
+        return lines.join("\n");
+      };
+
+      // Disegna lo stato corrente sul messaggio (crea o edita). Status = testo
+      // grezzo (no MarkdownV2): sono righe di servizio, niente escape necessario.
+      const paint = async (withHeader = true) => {
+        const body = renderChain(withHeader);
+        if (!body || body === lastRender) return;
+        lastRender = body;
         try {
-          if (!statusMsg) statusMsg = await ctxObj.reply(s);
-          else await ctxObj.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, s).catch(() => {});
+          if (!statusMsg) statusMsg = await ctxObj.reply(body);
+          else await ctxObj.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, body).catch(() => {});
         } catch {
-          /* best-effort */
+          /* best-effort: lo stato è cosmetico */
         }
       };
+
+      const status: StatusChain = {
+        thinking: async () => {
+          if (header) return;
+          header = THINKING_LINE;
+          await paint();
+        },
+        step: async (id, label) => {
+          steps.push({ id, label, state: "run" });
+          await paint();
+        },
+        done: async (id, ok) => {
+          const s = steps.find((x) => x.id === id);
+          if (s) s.state = ok ? "ok" : "err";
+          await paint();
+        },
+      };
+
+      // setStatus legacy: instrada sull'header effimero (retrocompat con chi non
+      // usa ancora la catena). Non crea step.
+      const setStatus = async (s: string) => {
+        if (s === header) return;
+        header = s;
+        await paint();
+      };
+
       const reply = async (out: string) => {
-        // Rimuovi lo status effimero, poi invia la risposta come messaggi NUOVI
-        // (così genera la notifica push anche se l'app è in background — un edit no).
-        if (statusMsg) await ctxObj.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id).catch(() => {});
+        // Decidi il destino della checklist:
+        //  - ≥2 step  → lascia la checklist (senza header effimero) come traccia
+        //               del lavoro svolto, poi manda il risultato come msg NUOVO;
+        //  - 0-1 step → cancella lo status (comportamento storico: niente scia).
+        if (statusMsg) {
+          if (steps.length >= 2) {
+            // Ridisegna senza header: restano solo le righe ✓/✗.
+            lastRender = ""; // forza il repaint
+            await paint(false);
+          } else {
+            await ctxObj.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id).catch(() => {});
+          }
+        }
         statusMsg = null;
-        // Chunking sul testo GREZZO (lunghezza reale), render per-chunk: evita di
-        // troncare a metà di una sequenza di escape MarkdownV2.
+        // Risposta come messaggi NUOVI (genera la notifica push anche in background;
+        // un edit no). Chunking sul GREZZO, render per-chunk per non troncare escape.
         for (const rawChunk of splitMessage(out)) {
           const rendered = renderMd ? renderMd(rawChunk) : rawChunk;
           try {
@@ -111,7 +165,7 @@ export class TelegramChannel implements Channel {
           }
         }
       };
-      const msg: InboundMessage = { userId, text, meta, setStatus, reply };
+      const msg: InboundMessage = { userId, text, meta, setStatus, status, reply };
       await this.handler(msg);
     };
 
